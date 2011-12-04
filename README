@@ -1,0 +1,14 @@
+
+C Reflection  2011-12-3
+
+
+A set of tools to bring reflection ability into C. 
+
+Though C is statically typed, the introspective part of 
+reflection can be implemented easily. The tools 
+will start with type introspection. Once that is done 
+we will explore other possibility. 
+
+The target use of the C reflection will be mostly for 
+testing, debugging, troubleshooting at this time. 
+
