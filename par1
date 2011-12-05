@@ -15,7 +15,8 @@ my %typenos = ();
             # where arg is one of: simple, struct, enum, union, typedef
             #
             # simple:
-            # struct: [arg, name, size, arrayn, ptrn, struct_desc]
+            # struct:  [arg, name, size, arrayn, ptrn, struct_desc]
+            # typedef: [arg, name, size, arrayn, ptrn, newtype]
 
 ##############################################################################
 # read the .S file with stags:
@@ -61,6 +62,9 @@ sub print_typenos{
                 my @fn = @{$i};
                 printf("  %32s  %6s   %4d %4d\n", $fn[0], $fn[1], $fn[2], $fn[3]);
             }
+        } elsif ($t[0] eq 'typedef') {
+            my $dst = $t[5];
+                printf("  %32s  %6s\n", "", $dst);
         }
     }
 }
@@ -86,16 +90,34 @@ sub flt3 { #
     while( scalar @lines) {
         my $line = shift @lines;
         if (      $line =~ m'^([\w]+):T\((\d+,\d+)\)=s(\d+)(.*);$' ) {
+            # struct ss1_s {...};
+            # ss1_s:T(0,19)=s16x:(0,1),0,32;y:(0,1),32,32;z:(0,3),64,32;zz:(0,3),96,32;;
             my $t = $1; #name
             my $n = $2; #no
             my $s = $3; #size
             my $f = $4; #fields
             #printf("$f\n");
             my $fref = flt3_struct($f);
-                #     value array [arg, name, size, arrayn, ptrn]
+            #     value array [arg, name, size, arrayn, ptrn, struct_desc]
             $typenos{$n} = ['struct', $t, $s, 1, 0, $fref];
+        } elsif ( $line =~ m'^([\w]+):t\((\d+,\d+)\)=\((\d+,\d+)\)$' ) {
+            # typedef struct ss1_s ss1_t;
+            my $t = $1; #name
+            my $n = $2; #no
+            my $dst = $3; #dest type no
+            my $s = $typenos{$dst}->[2];
+            $typenos{$n} = ['typedef', $t, $s, 1, 0, $dst];
+        } elsif ( $line =~ m'^([\w]+):t\((\d+,\d+)\)=\((\d+,\d+)\)=xs(\w+):$' ) {
+            # struct ss1_s;
+            # typedef struct ss1_s ss1_t;
+            my $t = $1; #name
+            my $n = $2; #no
+            my $dst = $3; #dest type no
+            my $s = -1; #signal for later making up.
+            my $dstname = $4; # ignore for now
+            $typenos{$n} = ['typedef', $t, $s, 1, 0, $dst];
         } else {
-            printf("$line\n");
+            printf("unknown line $line\n");
         }
     }
 }
