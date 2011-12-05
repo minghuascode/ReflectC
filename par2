@@ -1,0 +1,275 @@
+#!/usr/bin/perl -w
+# par1 -- reflectc  version 0.00
+
+use strict;
+
+##############################################################################
+# configureation:
+
+##############################################################################
+# globals:
+
+my $sub_struct_cnt = 0; # will count anonymous sub structs
+my %typenos = (); 
+            # hashed by type no, e.g. "0,11", 
+            #     value array [arg, name, size, arrayn, ptrn]
+            # where arg is one of: simple, struct, enum, union, typedef
+            #
+            # simple:
+            # struct:  [arg, name, size, arrayn, ptrn, struct_desc]
+            # typedef: [arg, name, size, arrayn, ptrn, newtype]
+
+##############################################################################
+# read the .S file with stags:
+
+    if ($#ARGV < 0) { die "must specify input .S file\n"; }
+my $infile = $ARGV[0];
+    if ( ! -f $infile || ! -e $infile) { die "input file not exist.\n"; }
+    open INFILE, "<$infile" || die "can not open $infile\n";
+my @inlines=<INFILE>;
+    close INFILE;
+
+##############################################################################
+# parsing:
+
+print STDERR "parsing stabs in the file...\n";
+my (@mtypes, @mglobals) = ( (), () );
+    {   my @temp = flt1(@inlines);
+        @mtypes = @{$temp[0]};
+        @mglobals = @{$temp[1]};
+    }
+    #foreach my $i (@mtypes)   { print(" type: $i\n"); }
+    #foreach my $i (@mglobals) { print(" glob: $i\n"); }
+
+@mtypes = flt2(@mtypes); # filter intrinsics
+    #print_typenos();
+
+@mtypes = flt3(@mtypes); # filter structs etc
+    print_typenos();
+
+#todo: here there should be an empty @mtypes
+#todo: fill in forward-declared typedef size
+#todo: parse @mglobals
+#todo: union, enum, pointers
+#todo: intrinsic type handlers
+
+exit 0;
+
+##############################################################################
+# subs:
+
+sub print_typenos{
+    foreach my $i (keys(%typenos)) {
+        my @t = @{$typenos{$i}};
+        printf(" %6s  %8s %22s  %2d %d %d\n", 
+                        $i, $t[0], $t[1], $t[2], $t[3], $t[4]);
+        if ($t[0] eq 'struct') {
+            my @fs = @{$t[5]};
+            foreach my $i (@fs) {
+                #[$fn, $t, $off, $sz];
+                my @fn = @{$i};
+                printf("  %52s  %6s   %4d %4d\n", 
+                                  $fn[0], $fn[1], $fn[2], $fn[3]);
+            }
+        } elsif ($t[0] eq 'typedef') {
+            my $dst = $t[5];
+                printf("  %52s  %6s\n", "", $dst);
+        }
+    }
+}
+
+sub flt3_substruct {
+    my ($topname, $no, $input) = @_;
+    if (      $input =~ m'^s(\d+)(.*)$' ) {
+        $sub_struct_cnt ++;
+        my $s = $1;
+        my $f = $2;
+        my $tail = flt3_struct(
+                       $topname."_sub".sprintf("%04d",$sub_struct_cnt), 
+                       $no, $s, $f);
+        return $tail;
+    } else {
+        die "flt3_substruct\n";
+    }
+}
+
+sub flt3_struct {
+    my ($targ, $narg, $sarg, $input) = @_; # t==typename
+    my @fields = ();
+    while( length($input) > 0 && substr($input,0,1) ne ';') { 
+        if ( $input =~ m'^(\w+):\((\d+,\d+)\),(\d+),(\d+);(.*)$' ) {
+            my ($fn, $no, $off, $sz) = ($1, $2, $3, $4);
+            $input = $5;
+            push @fields, [$fn, $no, $off, $sz];
+        } elsif ( $input =~ m'^(\w+):\((\d+,\d+)\)=(.*)$' ) {
+            my ($fn, $no, $off, $sz) = ($1, $2, -1, -1);
+            my $tail = $3;
+            my $offsz = flt3_substruct($targ, $no, $tail);
+            if ( $offsz =~ m'^,(\d+),(\d+);(.*)$' ) {
+                ($off, $sz, $input) = ($1, $2, $3);
+            } else {
+                print STDERR "error: flt3_struct unknown field $input\n";
+                die "error: flt3_struct unknown field $input\n";
+            }
+            push @fields, [$fn, $no, $off, $sz];
+        } else {
+            print STDERR "error: flt3_struct unknown field $input\n";
+            die "error: flt3_struct unknown field $input\n";
+        }
+    }
+    #     value array [arg, name, size, arrayn, ptrn, struct_desc]
+    $typenos{$narg} = ['struct', $targ, $sarg, 1, 0, \@fields];
+    if ( substr($input,0,1) eq ';' ) {
+        $input = "".substr($input, 1);
+    } else {
+        print STDERR "error: flt3_struct not finishing with ;\n";
+        die "error: flt3_struct not finishing with ;\n";
+    }
+    return $input;
+}
+
+sub flt3 { # 
+    my @lines = @_;
+    while( scalar @lines) {
+        my $line = shift @lines;
+        if (      $line =~ m'^([\w]+):T\((\d+,\d+)\)=s(\d+)(.*)$' ) {
+            # struct ss1_s {...};
+            # ss1_s:T(0,19)=s16x:(0,1),0,32;y:(0,1),32,32;z:(0,3),64,32;zz:(0,3),96,32;;
+            my ($t, $n, $s, $f) = ($1, $2, $3, $4); #name, no, size, fields
+            #printf("$f\n");
+            my $tail = flt3_struct($t, $n, $s, $f);
+            if ( length($tail) > 0 ) {
+                print STDERR "error: flt3 unfinished tail $tail\n";
+                die "error: flt3 unfinished tail $tail\n";
+            }
+        } elsif ( $line =~ m'^([\w]+):t\((\d+,\d+)\)=\((\d+,\d+)\)(=xs(\w+):)?$' ) {
+            # typedef struct ss1_s ss1_t;
+            my $t = $1; #name
+            my $n = $2; #no
+            my $dst = $3; #dest type no
+            my $dstname = $5; # ignore for now
+            my $s = 0;
+            if ( length($dstname) > 0 ) {
+                # struct ss1_s;
+                # typedef struct ss1_s ss1_t;
+                $s = -1; #signal for later making up.
+            } else {
+                $s = $typenos{$dst}->[2];
+            } 
+            $typenos{$n} = ['typedef', $t, $s, 1, 0, $dst];
+        } else {
+            printf("unknown line $line\n");
+        }
+    }
+}
+
+sub flt2 { # 
+    my @lines = @_;
+    
+    my %intrinsics = (
+        'int'             =>  4,
+        'unsigned int'    =>  4,
+
+        'char'            =>  1,
+        'signed char'     =>  1,
+        'unsigned char'   =>  1,
+
+        'long int'          =>  4,
+        'long unsigned int' =>  4, 
+
+        'short int'         =>  2,
+        'short unsigned int'=>  2
+    );
+    my %filterouts = (
+        'long long int'           =>1,
+        'long long unsigned int'  =>1,
+        'float'          => 1,
+        'double'         => 1,
+        'long double'    => 1,
+        '_Decimal32'     => 1,
+        '_Decimal64'     => 1,
+        '_Decimal128'    => 1
+    );
+    #    'void:t(0,18)=(0,18)
+
+    while( scalar @lines) {
+        my $line = shift @lines;
+        if (      $line =~ m'void:t\((\d+,\d+)\).*' ) {
+            $typenos{$1} = ['simple', 'void', 0, 1, 0];
+            last; # intrinsinc types ends at void.
+        } elsif ( $line =~ m'([\w ]+):t\((\d+,\d+)\).*' ) {
+            my ($t, $n) = ($1, $2);
+            if (      exists($filterouts{$t}) ) {
+                ; # skip
+            } elsif ( exists($intrinsics{$t} ) ) {
+                #     value array [arg, name, size, arrayn, ptrn]
+                $typenos{$n} = ['simple', $t, $intrinsics{$t}, 1, 0];
+            } else {
+                print STDERR "error: unknown intrinsinc type $line\n";
+                die "error: unknown intrinsinc type $line\n";
+            }
+        } else {
+            print STDERR "error: unknown intrinsinc format $line\n";
+            die "error: unknown intrinsinc format $line\n";
+        }
+    }
+    return @lines;
+}
+
+sub flt1 { # 
+    my @lines = @_;
+    my @outtypes = (); 
+    my @outglobals = (); 
+    
+    foreach my $line (@lines) {
+       next if ( $line !~ m|^\s+\.stabs\s+("\S+.*",\d+,\d+,\d+,\S+)\s*$| );
+       my $stabs = $1;
+       if ( $stabs !~ m|^"(\S+.*)",(\d+),\d+,\d+,(\S+)$| ) {
+           die "Unknown stabs format at $line\n";
+       }
+       my $def = $1; my $type = $2; my $value = $3;
+       next if ($type == 100 && $value =~ m'.Ltext0');
+       next if ($type == 60); #def: gcc2_compiled.
+
+       if      ( $type == 128 ) {
+           push @outtypes, $def;
+       } elsif ( $type == 32  || $type == 40 ) {
+           push @outglobals, $def;  #32 for G(,), 40 for S(,)
+       } else {
+           die "Unknown stabs type at $line\n";
+       }
+    }
+    
+    return (\@outtypes, \@outglobals);
+}
+
+__END__
+
+Refer to: http://www.cygwin.com/stabs.html
+
+.stabs "string",type,other,desc,value
+.stabn type,other,desc,value
+.stabd type,other,desc
+.stabx "string",value,type,sdb-type
+
+
+flt2() will eat up these formats:
+ type: int:t(0,1)=r(0,1);-2147483648;2147483647;
+ type: char:t(0,2)=r(0,2);0;127;
+ type: long int:t(0,3)=r(0,3);-2147483648;2147483647;
+ type: unsigned int:t(0,4)=r(0,4);0;-1;
+ type: long unsigned int:t(0,5)=r(0,5);0;-1;
+ type: long long int:t(0,6)=r(0,6);0;-1;
+ type: long long unsigned int:t(0,7)=r(0,7);0;-1;
+ type: short int:t(0,8)=r(0,8);-32768;32767;
+ type: short unsigned int:t(0,9)=r(0,9);0;65535;
+ type: signed char:t(0,10)=r(0,10);-128;127;
+ type: unsigned char:t(0,11)=r(0,11);0;255;
+ type: float:t(0,12)=r(0,1);4;0;
+ type: double:t(0,13)=r(0,1);8;0;
+ type: long double:t(0,14)=r(0,1);12;0;
+ type: _Decimal32:t(0,15)=r(0,1);4;0;
+ type: _Decimal64:t(0,16)=r(0,1);8;0;
+ type: _Decimal128:t(0,17)=r(0,1);16;0;
+ type: void:t(0,18)=(0,18)
+
